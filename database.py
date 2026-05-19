@@ -1,12 +1,19 @@
 import os
+from dotenv import load_dotenv
 from supabase import create_client, Client
 from datetime import datetime, date, timedelta
 
+# Charger les variables d'environnement depuis le fichier .env
+load_dotenv()
+
 # ============================================================
-#  CONFIGURATION — Remplace par tes vraies valeurs
+#  CONFIGURATION — Variables d'environnement obligatoires (.env)
 # ============================================================
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://sjwfgqgetweudlajczyp.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "sb_publishable_FDxdWRusf2i3tYN8pnSf0g_ObRaGCbR")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("⚠️ ERREUR : SUPABASE_URL et SUPABASE_KEY doivent être définis en variable d'environnement (ex: fichier .env)")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -214,3 +221,4 @@ def save_schedule(target_type: str, target_id: str, day_of_week: str,
         supabase.table("schedules").update(data).eq("id", res.data[0]["id"]).execute()
     else:
         supabase.table("schedules").insert(data).execute()
+        

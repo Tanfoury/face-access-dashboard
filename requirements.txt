@@ -3,3 +3,4 @@ supabase
 pandas
 opencv-python-headless
 streamlit-autorefresh
+python-dotenv
