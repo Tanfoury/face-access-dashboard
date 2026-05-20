@@ -9,8 +9,22 @@ from ultralytics import YOLO
 # ---- PATH SETUP ----
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ---- LOAD YOLO ----
-model = YOLO(os.path.join(BASE_DIR, "yolov8n-face.pt"))
+# ---- LOAD YOLO (lazy) ----
+_yolo_model = None
+
+def get_yolo_model():
+    global _yolo_model
+    if _yolo_model is None:
+        try:
+            from ultralytics import YOLO
+            model_path = os.path.join(BASE_DIR, "yolov8n-face.pt")
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"YOLO model not found: {model_path}")
+            _yolo_model = YOLO(model_path)
+        except Exception as e:
+            print(f"[YOLO] Failed to load model: {e}")
+            raise
+    return _yolo_model
 
 # ---- CONFIG ----
 ENROLL_FRAME_SKIP  = 15    # run YOLO every 15 frames only
@@ -219,7 +233,7 @@ def enroll_student(name, student_id, grade, category, num_photos=25):
 
             if now - last_photo_time >= PHOTO_DELAY:
 
-                results = model(frame, verbose=False)
+                results = get_yolo_model()(frame, verbose=False)
 
                 for result in results:
                     for box in result.boxes:
