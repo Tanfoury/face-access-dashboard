@@ -1,0 +1,8 @@
+*.db
+*.jpg
+*.pkl
+__pycache__/
+venv*/
+.env
+known_faces/
+

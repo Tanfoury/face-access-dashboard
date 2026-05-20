@@ -1,0 +1,2 @@
+models/buffalo_s/1k3d68.onnx filter=lfs diff=lfs merge=lfs -text
+models/buffalo_s.zip filter=lfs diff=lfs merge=lfs -text

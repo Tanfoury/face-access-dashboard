@@ -1,0 +1,16 @@
+[Unit]
+Description=Systeme reconnaissance faciale
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/Desktop/rasp
+ExecStart=/usr/bin/python3 /home/pi/Desktop/rasp/main.py
+Restart=on-failure
+RestartSec=5
+ExecStartPre=/bin/sleep 5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
