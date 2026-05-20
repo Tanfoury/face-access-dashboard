@@ -17,7 +17,7 @@ Assure-toi d'importer depuis database_schedule.py :
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
-from database import (
+from database1 import (
     get_all_subjects, add_subject,
     save_time_slot, delete_time_slot,
     get_time_slots, get_schedule_grid,
