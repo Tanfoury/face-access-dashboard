@@ -3,7 +3,6 @@ import cv2
 import os
 import time
 import numpy as np
-from scipy.datasets import face
 from database1 import init_db, add_student
 from ultralytics import YOLO
 
