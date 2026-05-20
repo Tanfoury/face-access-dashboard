@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, date
 from database import Session, Student, AccessLog, init_db, Schedule, get_schedules
-from database import (
+from database1 import (
     get_all_subjects, add_subject,
     save_time_slot, delete_time_slot,
     get_time_slots, get_schedule_grid,
