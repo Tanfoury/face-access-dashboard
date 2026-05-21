@@ -1,9 +1,8 @@
 import os
-import cv2
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
-from database import Session, Student, AccessLog, init_db, Schedule, get_schedules
+from database1 import Session, Student, AccessLog, init_db, Schedule, get_schedules
 from database1 import (
     get_all_subjects, add_subject,
     save_time_slot, delete_time_slot,
@@ -12,7 +11,6 @@ from database1 import (
 )
 from tabs_emploi_du_temps import render_tab6, render_tab7
 from streamlit_autorefresh import st_autorefresh
-from enroll import enroll_student
 import streamlit.components.v1 as components
 
 init_db()
@@ -544,9 +542,7 @@ with tab4:
 
         if os.path.exists(image_path):
             try:
-                frame = cv2.imread(image_path)
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                st.image(frame, channels="RGB", use_container_width=True, clamp=True)
+                st.image(image_path, use_container_width=True, clamp=True)
             except Exception:
                 st.error("Erreur de chargement du flux vidéo.")
         else:
@@ -623,6 +619,7 @@ with tab5:
         if submitted:
             if name and student_id:
                 with st.spinner(f"Enrôlement de {name} en cours..."):
+                    from enroll import enroll_student
                     enroll_student(name, student_id, grade, category)
                 st.success(f"✅ Inscription de **{name}** terminée avec succès !")
                 st.cache_data.clear()
