@@ -16,7 +16,7 @@ from config import (
     BUZZER_PIN, UNLOCK_SECONDS
 )
 from face_db import initialize, recognize_face
-from database1 import (
+from database import (
     init_db, daily_reset,
     get_student_by_name, log_access,
     is_inside, update_inside,
