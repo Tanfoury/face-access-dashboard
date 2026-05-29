@@ -277,7 +277,7 @@ st.markdown(f"""
 def get_data():
     session = Session()
     students = session.query(Student).all()
-    logs = session.query(AccessLog).order_by(AccessLog.timestamp.desc()).all()
+    logs = session.query(AccessLog).all()
     # Detach from session
     student_list = [{
         "id": s.id, "name": s.name, "student_id": s.student_id,
