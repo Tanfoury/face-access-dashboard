@@ -18,7 +18,7 @@ class Camera:
             self.picam = Picamera2()
 
             config = self.picam.create_preview_configuration(
-                main={"size": (960, 720), "format": "BGR888"},
+                main={"size": (3280, 2464), "format": "BGR888"},
                 
             )
             self.picam.configure(config)

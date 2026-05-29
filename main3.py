@@ -1,3 +1,4 @@
+# main3.py
 import os
 import cv2
 import time
@@ -5,6 +6,7 @@ import threading
 import socket
 from datetime import datetime
 import queue
+
 _lcd_queue = queue.Queue()
 from camera import Camera
 from detector import detect_faces
@@ -21,19 +23,34 @@ from database1 import (
     has_entry_today, has_exit_today,
     clear_all_logs
 )
+from device_detector import init_yolo, detect_spoof_devices
 
-# -- Cooldown ------------555----5------55---------------------777---------------------
+# Explicitly ensure Faiss does not launch resource-hogging internal thread pools
+try:
+    import faiss
+    faiss.omp_set_num_threads(1)
+    print("[FAISS] Locked search execution to 1 thread for maximum CPU efficiency.")
+except ImportError:
+    pass
+
+# -- Cooldowns & Controls -----------------------------------------------------
 ENTRY_EXIT_COOLDOWN = 30
+ALARM_COOLDOWN = 4.0      # Protects the CPU loop from getting clogged by hardware delays
+_last_alarm_time = 0
+
+# -- Global Threat Trackers ---------------------------------------------------
+_spoof_detected = False
+_tracked_spoof_boxes = [] 
+_threat_lock = threading.Lock()
 
 # -- LCD Setup ---------------------------------------------------------------
 LCD_ENABLED = True
-LCD_ADDRESS = 0x27        # Change to 0x3F if needed
+LCD_ADDRESS = 0x27        
 
 lcd            = None
 _lcd_lock      = threading.Lock()
-_lcd_queue     = None     # will be set after import
-_lcd_current   = ("", "")  # track what's currently shown to avoid flicker
-_lcd_last_msg_time = {}    # track when we last showed a message for a specific label
+_lcd_current   = ("", "")  
+_lcd_last_msg_time = {}    
 
 def lcd_show_for_label(label, line1, line2="", auto_clear_sec=0, cooldown=5):
     now = time.time()
@@ -41,81 +58,65 @@ def lcd_show_for_label(label, line1, line2="", auto_clear_sec=0, cooldown=5):
         lcd_show(line1, line2, auto_clear_sec)
         _lcd_last_msg_time[label] = now
 
-
 def lcd_init():
-    """Initialize LCD in its own thread to avoid blocking."""
     global lcd, LCD_ENABLED, _lcd_queue
     import queue
     _lcd_queue = queue.Queue()
     try:
         from RPLCD.i2c import CharLCD
         lcd = CharLCD(
-            'PCF8574',
-            LCD_ADDRESS,
-            port=1,
-            cols=16,
-            rows=2,
-            dotsize=8,
-            charmap='A02',      # <-- fixes weird symbols
-            auto_linebreaks=False
+            'PCF8574', LCD_ADDRESS, port=1, cols=16, rows=2,
+            dotsize=8, charmap='A02', auto_linebreaks=False
         )
         lcd.clear()
         time.sleep(0.05)
         print("[LCD] LCD initialized successfully")
-        # Start the dedicated LCD writer thread
         threading.Thread(target=_lcd_writer_thread, daemon=True).start()
         lcd_show("Access System", "Starting...")
     except Exception as e:
         print(f"[LCD] Failed to initialize: {e}")
         LCD_ENABLED = False
 
-
 def _lcd_writer_thread():
-    """
-    Dedicated thread that reads from the queue and writes to LCD.
-    This keeps ALL lcd I/O off the main thread -> no lag.
-    """
     global _lcd_current
     while True:
         try:
             line1, line2 = _lcd_queue.get(timeout=1)
-            # Skip if same message already shown
             if (line1, line2) == _lcd_current:
                 _lcd_queue.task_done()
                 continue
             with _lcd_lock:
-                # Write line 1
                 lcd.cursor_pos = (0, 0)
                 lcd.write_string(line1.ljust(16)[:16])
                 time.sleep(0.01)
-                # Write line 2
                 lcd.cursor_pos = (1, 0)
                 lcd.write_string(line2.ljust(16)[:16])
             _lcd_current = (line1, line2)
             _lcd_queue.task_done()
         except queue.Empty:
-            if _lcd_current[0] == "Access System" or _lcd_current[0] == "":
+            with _labels_lock:
+                is_idle = not _face_labels
+            
+            # If idle and last message was the default "Ready..." or time itself
+            if is_idle and (_lcd_current[0] == "Access System" or "/" in _lcd_current[0]):
                 now = datetime.now()
-                date_str = now.strftime("%d/%m/%Y")
-                heure_str = now.strftime("    %H:%M:%S")
-                try:
-                    with _lcd_lock:
-                        lcd.cursor_pos = (0, 0)
-                        lcd.write_string(date_str.ljust(16)[:16])
-                        time.sleep(0.01)
-                        lcd.cursor_pos = (1, 0)
-                        lcd.write_string(heure_str.ljust(16)[:16])
-                except Exception as e:
-                    print(f"LCD Write Error: {e}")
-        except Exception as e:
-            print(f"LCD Thread Error: {e}")
-
+                d_str = now.strftime("%d/%m/%Y")
+                t_str = now.strftime("%H:%M:%S")
+                if (d_str, t_str) != _lcd_current:
+                    try:
+                        with _lcd_lock:
+                            lcd.cursor_pos = (0, 0)
+                            lcd.write_string(d_str.center(16)[:16])
+                            time.sleep(0.01)
+                            lcd.cursor_pos = (1, 0)
+                            lcd.write_string(t_str.center(16)[:16])
+                        _lcd_current = (d_str, t_str)
+                    except Exception:
+                        pass
+        except Exception:
+            pass   
 
 def lcd_show(line1, line2="", auto_clear_sec=0):
-    """
-    Queue a message to show on LCD (non-blocking, never slows main thread).
-    If auto_clear_sec > 0, queues a 'Ready' message after that delay.
-    """
     if not LCD_ENABLED or _lcd_queue is None:
         return
     _lcd_queue.put((line1[:16], line2[:16]))
@@ -124,29 +125,28 @@ def lcd_show(line1, line2="", auto_clear_sec=0):
             time.sleep(auto_clear_sec)
             with _labels_lock:
                 if not _face_labels:
-                    
-                    _lcd_queue.put(("Access System", "Ready..."))
+                    now = datetime.now()
+                    _lcd_queue.put((now.strftime("%d/%m/%Y"), now.strftime("%H:%M:%S")))
         threading.Thread(target=_reset, daemon=True).start()
 
 
+
 # -- GPIO --------------------------------------------------------------------
-_global_buzzer = None
 if GPIO_ENABLED:
     import RPi.GPIO as GPIO
     GPIO.setmode(GPIO.BCM)
     for pin in [LED_GREEN, LED_RED, LED_YELLOW, BUZZER_PIN]:
         GPIO.setup(pin, GPIO.OUT)
         GPIO.output(pin, GPIO.LOW)
-    _global_buzzer = GPIO.PWM(BUZZER_PIN, 1000)
-    _global_buzzer.start(0)  # Start with 0 duty cycle (silent)
     print("[GPIO] GPIO ready")
 else:
     print("[GPIO] PC mode -- GPIO disabled")
 
-# -- Shared state ------------------------------------------------------------
+# -- Shared State Core -------------------------------------------------------
 _latest_frame  = None
 _frame_lock    = threading.Lock()
 
+# Keyed by an auto-incrementing integer Face ID instead of vulnerable grid positions
 _face_labels   = {}
 _labels_lock   = threading.Lock()
 
@@ -157,7 +157,7 @@ _last_action   = {}
 _running       = True
 _frame_count   = 0
 
-LABEL_TIMEOUT  = 0.2
+LABEL_TIMEOUT  = 1.5 
 
 
 # -- GPIO helpers ------------------------------------------------------------
@@ -179,46 +179,34 @@ def red_alert():
         print("[DOOR] Reject")
         return
     GPIO.output(LED_RED, GPIO.HIGH)
-    if _global_buzzer is not None:
-        try:
-            _global_buzzer.ChangeDutyCycle(50)
-            time.sleep(0.3)
-            _global_buzzer.ChangeDutyCycle(0)
-        except Exception as e:
-            print(f"[BUZZER ERROR] {e}")
-    else:
-        time.sleep(0.3)
-    time.sleep(1.7)
+    buzzer = GPIO.PWM(BUZZER_PIN, 1000)
+    buzzer.start(50)
+    time.sleep(0.3)
+    buzzer.stop()
+    time.sleep(1.2)
     GPIO.output(LED_RED, GPIO.LOW)
 
 def wifi_monitor_thread():
-    """Continuously checks Wi-Fi/Internet and toggles the yellow LED if disconnected."""
     while _running:
         try:
-            # Check connection to an external reliable IP (e.g. Google DNS)
             socket.create_connection(("8.8.8.8", 53), timeout=3)
-            # We have connection -> Turn off Yellow LED
             if GPIO_ENABLED:
                 GPIO.output(LED_YELLOW, GPIO.LOW)
         except OSError:
-            # No connection -> Turn on Yellow LED
             if GPIO_ENABLED:
                 GPIO.output(LED_YELLOW, GPIO.HIGH)
-        time.sleep(5)  # check every 5 seconds
+        time.sleep(5)  
 
 def scheduled_maintenance_thread():
     """ Runs daily reset and clear tasks automatically every 24 hours. """
     while _running:
         now = datetime.now()
-        # Schedule at midnight (e.g., 00:00:00)
-        # We check roughly every minute
         if now.hour == 0 and now.minute == 0:
             print("[MAINTENANCE] Running automatic daily reset and logs cleanup...")
             try:
-                daily_reset() # This now includes cleanup_old_logs(30)
+                daily_reset()
             except Exception as e:
                 print(f"[MAINTENANCE] Error: {e}")
-            # sleep to avoid re-triggering in the same minute
             time.sleep(60)
         time.sleep(30)
 
@@ -257,11 +245,10 @@ def handle_access(name):
 
     threading.Thread(target=green_flash, daemon=True).start()
 
-    time_str = datetime.now().strftime("%H:%M:%S")
     if action == "ENTRY":
-        lcd_show_for_label(name, name[:16], f"In : {time_str}", auto_clear_sec=4, cooldown=0)
+        lcd_show_for_label(name, "Welcome!", name[:16], auto_clear_sec=4, cooldown=0)
     else:
-        lcd_show_for_label(name, name[:16], f"Out: {time_str}", auto_clear_sec=4, cooldown=0)
+        lcd_show_for_label(name, "Goodbye!", name[:16], auto_clear_sec=4, cooldown=0)
 
     color = (0, 255, 0) if action == "ENTRY" else (0, 255, 100)
     print(f"[ACCESS] {action} -- {name} at {datetime.now().strftime('%H:%M:%S')}")
@@ -279,10 +266,14 @@ def camera_capture_thread(camera):
                 _latest_frame = frame
 
 
-# -- Thread 2: Detection -----------------------------------------------------
+# -- Thread 2: Hardened Detection Loop ---------------------------------------
 
 def detection_thread():
-    global _running, _frame_count
+    global _running, _frame_count, _spoof_detected, _tracked_spoof_boxes, _last_alarm_time
+
+    # Initialize auto-incrementing tracking index
+    if not hasattr(detection_thread, "next_id"):
+        detection_thread.next_id = 0
 
     while _running:
         with _frame_lock:
@@ -301,51 +292,137 @@ def detection_thread():
         boxes = detect_faces(frame)
         now   = time.time()
 
-        current_keys = set()
+        local_all_spoof_boxes = []
+        any_spoof_in_frame = False
+        current_frame_face_ids = set()
+
+        # Bug Fix 4: Centroid Bounding Box Tracker (Eliminates Grid Boundary Jumps)
         for (x1, y1, x2, y2) in boxes:
-            cx       = ((x1 + x2) // 2) // 200 * 200
-            cy       = ((y1 + y2) // 2) // 200 * 200
-            face_key = (cx, cy)
-            current_keys.add(face_key)
-
+            cx = (x1 + x2) // 2
+            cy = (y1 + y2) // 2
+            
+            matched_id = None
+            min_distance = 100.0  # Pixels radius threshold for tracking stability
+            
             with _labels_lock:
-                if face_key in _face_labels:
-                    _face_labels[face_key]["bbox"]      = (x1, y1, x2, y2)
-                    _face_labels[face_key]["last_seen"] = now
-                else:
-                    _face_labels[face_key] = {
-                        "label":     "Scanning...",
-                        "color":     (0, 165, 255),
-                        "bbox":      (x1, y1, x2, y2),
-                        "last_seen": now
-                    }
-                if _lcd_queue.qsize() == 0:
-                    lcd_show("Scanning...", "Please wait")
+                for fid, info in _face_labels.items():
+                    px, py = info["center"]
+                    distance = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
+                    if distance < min_distance:
+                        min_distance = distance
+                        matched_id = fid
+            
+            if matched_id is not None:
+                face_id = matched_id
+            else:
+                detection_thread.next_id += 1
+                face_id = detection_thread.next_id
 
-            if _frame_count % FRAME_SKIP == 0:
+            current_frame_face_ids.add(face_id)
+
+            # Bug Fix 1: Localize timestamps inside the face structure map
+            with _labels_lock:
+                if face_id in _face_labels:
+                    _face_labels[face_id]["bbox"]      = (x1, y1, x2, y2)
+                    _face_labels[face_id]["center"]    = (cx, cy)
+                    _face_labels[face_id]["last_seen"] = now
+                else:
+                    _face_labels[face_id] = {
+                        "label":          "Verifying...",
+                        "color":          (0, 165, 255),
+                        "bbox":           (x1, y1, x2, y2),
+                        "center":         (cx, cy),
+                        "first_seen":     now,
+                        "last_seen":      now,
+                        "spoof_detected": False
+                    }
+                
+                elapsed_security_wait = now - _face_labels[face_id]["first_seen"]
+                if elapsed_security_wait < 0.15:
+                    _face_labels[face_id]["label"] = "Verifying..."
+                elif _face_labels[face_id]["label"] == "Verifying...":
+                    _face_labels[face_id]["label"] = "Scanning..."
+
+            # Bug Fix 2: Edge-of-Screen Matrix Boundary Guard Protection
+            if _frame_count % 3 == 0:
+                h, w, _ = frame.shape
+                padding = 40
+                cx1 = max(0, x1 - padding)
+                cy1 = max(0, y1 - padding)
+                cx2 = min(w, x2 + padding)
+                cy2 = min(h, y2 + padding)
+                
+                # Check for degenerate or zero-sized crop sizes to prevent OpenCV C++ faults
+                if (cx2 - cx1) > 10 and (cy2 - cy1) > 10:
+                    face_crop = frame[cy1:cy2, cx1:cx2]
+                    try:
+                        is_spoof, cropped_spoof_boxes = detect_spoof_devices(face_crop)
+                        
+                        # Bug Fix 3: Localize the threat flag directly to this specific target's ID
+                        with _labels_lock:
+                            if face_id in _face_labels:
+                                _face_labels[face_id]["spoof_detected"] = is_spoof
+                        
+                        if is_spoof:
+                            any_spoof_in_frame = True
+                            for (sx1, sy1, sx2, sy2, cid) in cropped_spoof_boxes:
+                                local_all_spoof_boxes.append((sx1 + cx1, sy1 + cy1, sx2 + cx1, sy2 + cy1, cid))
+                    except Exception as e:
+                        print(f"[SAFEOUARD] Blocked array exception from empty slice: {e}")
+
+            # Fetch localized state metrics safely before firing workers
+            with _labels_lock:
+                target_metrics = dict(_face_labels.get(face_id, {}))
+            
+            if not target_metrics or target_metrics.get("spoof_detected", False):
+                continue
+
+            elapsed_security_wait = now - target_metrics["first_seen"]
+
+            # Fire verification worker only when individual safety conditions are satisfied
+            if _frame_count % FRAME_SKIP == 0 and elapsed_security_wait >= 0.15:
                 with _recog_lock:
-                    if face_key not in _recog_active:
-                        _recog_active.add(face_key)
+                    if face_id not in _recog_active:
+                        _recog_active.add(face_id)
                         threading.Thread(
                             target=recognize_worker,
-                            args=(frame, (x1, y1, x2, y2), face_key),
+                            args=(frame, (x1, y1, x2, y2), face_id),
                             daemon=True
                         ).start()
 
+        # Update global references solely for physical sirens and visual indicators
+        with _threat_lock:
+            _spoof_detected = any_spoof_in_frame
+            _tracked_spoof_boxes = local_all_spoof_boxes
+
+        if _spoof_detected and (now - _last_alarm_time > ALARM_COOLDOWN):
+            _last_alarm_time = now
+            lcd_show_for_label("GlobalSpoof", "SPOOF ATTEMPT", "ACCESS DENIED", auto_clear_sec=2, cooldown=3)
+            threading.Thread(target=red_alert, daemon=True).start()
+
         with _labels_lock:
-            stale = [k for k, v in _face_labels.items()
-                     if now - v["last_seen"] > LABEL_TIMEOUT]
+            stale = [k for k, v in _face_labels.items() if now - v["last_seen"] > LABEL_TIMEOUT]
             for k in stale:
                 _face_labels.pop(k, None)
 
         time.sleep(0.01)
 
 
-# -- Thread 3: Recognition worker --------------------------------------------
+# -- Thread 3: Isolated Recognition worker -----------------------------------
 
 def recognize_worker(frame, bbox, face_key):
+    global _last_alarm_time
+    label = "Scanning..."
+    color = (0, 165, 255)
     try:
-        # OPTIMISATION MASSSIVE : On empêche InsightFace de ralentir la boucle pendant l'attente du Clignement !
+        # Bug Fix 3 Check: Abort instantly if this specific identity key is flagged
+        with _labels_lock:
+            if face_key not in _face_labels or _face_labels[face_key].get("spoof_detected", False):
+                if face_key in _face_labels:
+                    _face_labels[face_key]["label"] = "SPOOF DETECTED ❌"
+                    _face_labels[face_key]["color"] = (0, 0, 255)
+                return
+
         cached_name = None
         with _labels_lock:
             if face_key in _face_labels and "name" in _face_labels[face_key]:
@@ -353,79 +430,68 @@ def recognize_worker(frame, bbox, face_key):
                 cached_sim = _face_labels[face_key]["sim"]
         
         if cached_name is not None:
-            # On a DÉJÀ vérifié le visage, pas besoin du lourd InsightFace
             name, sim = cached_name, cached_sim
         else:
-            # PREMIER PASSAGE : on fait bosser InsightFace (lourd)
-            name, sim = recognize_face(frame, bbox)
-            
-            if name == "Unknown":
-                with _labels_lock:
-                    if face_key in _face_labels:
-                        _face_labels[face_key].setdefault("unknown_count", 0)
-                        _face_labels[face_key]["unknown_count"] += 1
-                        
-                        if _face_labels[face_key]["unknown_count"] >= 3:
-                            # Only solidily confirm 'Unknown' after a few tries
-                            _face_labels[face_key]["name"] = name
-                            _face_labels[face_key]["sim"] = sim
-            else:
-                with _labels_lock:
-                    if face_key in _face_labels:
-                        _face_labels[face_key]["name"] = name
-                        _face_labels[face_key]["sim"] = sim
+            name, sim = recognize_face(frame, bbox) 
+            with _labels_lock:
+                if face_key in _face_labels:
+                    _face_labels[face_key]["name"] = name
+                    _face_labels[face_key]["sim"] = sim
+
+        # Re-verify threat flag prior to database authorization
+        with _labels_lock:
+            if face_key not in _face_labels or _face_labels[face_key].get("spoof_detected", False):
+                return
 
         if name != "Unknown":
-            # Normal entry logic (no anti-spoof)
             label, color, granted = handle_access(name)
             if not granted and "Wait" not in label and "Done" not in label:
-                threading.Thread(target=red_alert, daemon=True).start()
+                now = time.time()
+                if now - _last_alarm_time > ALARM_COOLDOWN:
+                    _last_alarm_time = now
+                    threading.Thread(target=red_alert, daemon=True).start()
         else:
-            # Check if we should buzz yet
-            should_buzz = False
-            with _labels_lock:
-                if face_key in _face_labels and _face_labels[face_key].get("unknown_count", 0) == 3:
-                    # Buzz only once on the transition to solid Unknown
-                    should_buzz = True
-                    
             label = f"Unknown ({sim:.0%})"
             color = (0, 0, 255)
             lcd_show_for_label("Unknown", "ACCESS DENIED", "Unknown Person", auto_clear_sec=3, cooldown=5)
-            if should_buzz:
+            now = time.time()
+            if now - _last_alarm_time > ALARM_COOLDOWN:
+                _last_alarm_time = now
                 threading.Thread(target=red_alert, daemon=True).start()
 
     except Exception as e:
         print(f"[RECOG] worker error: {e}")
         label = "Error"
         color = (0, 0, 255)
-        # LCD_ENABLED = False  # DO NOT CRASH LCD
     finally:
         with _labels_lock:
-            if face_key in _face_labels and 'label' in locals():
-                _face_labels[face_key]["label"] = label
-                _face_labels[face_key]["color"] = color
+            if face_key in _face_labels:
+                if _face_labels[face_key].get("spoof_detected", False):
+                    _face_labels[face_key]["label"] = "SPOOF DETECTED ❌"
+                    _face_labels[face_key]["color"] = (0, 0, 255)
+                else:
+                    _face_labels[face_key]["label"] = label
+                    _face_labels[face_key]["color"] = color
         with _recog_lock:
             _recog_active.discard(face_key)
 
 
-# -- Main thread: Display ----------------------------------------------------
+# -- Main Thread: Display ----------------------------------------------------
 
 def run():
-    global _running
+    global _running, _spoof_detected, _tracked_spoof_boxes
 
     init_db()
     # Nous avons retiré daily_reset() ici pour ne pas réinitialiser les présences au redémarrage en pleine journée
-    
     lcd_init()
 
-    print("[SYSTEM] Initializing face recognition...")
-    initialize()
-    
-    # Start the Wi-Fi monitoring thread
+    print("[SYSTEM] Initializing models...")
+    initialize()  
+    init_yolo()    
+
     wifi_thread = threading.Thread(target=wifi_monitor_thread, daemon=True)
     wifi_thread.start()
 
-    # Start the maintenance thread (daily reset & clean)
     maint_thread = threading.Thread(target=scheduled_maintenance_thread, daemon=True)
     maint_thread.start()
 
@@ -440,7 +506,8 @@ def run():
     while _latest_frame is None:
         time.sleep(0.05)
 
-    print("[SYSTEM] Access system running. Press Q to stop. Press C to clear logs.\n")
+
+    print("[SYSTEM] Access system running with Anti-Spoof Protection active.\n")
     lcd_show("Access System", "Ready...")
 
     fps_time = time.time()
@@ -451,27 +518,41 @@ def run():
                 continue
             display = _latest_frame.copy()
 
+        # 1. Render Face Trackers
         with _labels_lock:
             labels_copy = dict(_face_labels)
 
         for face_key, info in labels_copy.items():
             x1, y1, x2, y2 = info["bbox"]
-            cv2.rectangle(display, (x1, y1), (x2, y2), info["color"], 2)
+            face_spoof = info.get("spoof_detected", False)
+            
+            display_color = (0, 0, 255) if face_spoof else info["color"]
+            display_label = "SPOOF DETECTED ❌" if face_spoof else info["label"]
+
+            cv2.rectangle(display, (x1, y1), (x2, y2), display_color, 2)
             cv2.putText(
-                display, info["label"],
-                (x1, y1 - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6, info["color"], 2
+                display, display_label, (x1, y1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, display_color, 2
+            )
+
+        # 2. Render Explicit Electronics Threat Coordinates
+        with _threat_lock:
+            local_spoof_boxes = list(_tracked_spoof_boxes)
+
+        for (sx1, sy1, sx2, sy2, cid) in local_spoof_boxes:
+            label_text = "PHONE THREAT" if cid == 67 else "SCREEN THREAT"
+            cv2.rectangle(display, (sx1, sy1), (sx2, sy2), (0, 0, 255), 3)
+            cv2.putText(
+                display, f"⚠️ {label_text}", (sx1, sy1 - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2
             )
 
         now      = time.time()
         fps      = 1.0 / max(now - fps_time, 1e-6)
         fps_time = now
         cv2.putText(
-            display, f"FPS: {fps:.0f}",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6, (255, 255, 0), 2
+            display, f"FPS: {fps:.0f}", (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2
         )
 
         supervision_path = os.path.join(BASE_DIR, "supervision.jpg")

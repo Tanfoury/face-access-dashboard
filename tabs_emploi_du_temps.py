@@ -24,7 +24,6 @@ from database1 import (
     CRENEAUX, JOURS, Session, Student, AccessLog
 )
 
-
 # ============================================================
 # TAB 6 — Gestion des Emplois du Temps
 # ============================================================
@@ -45,112 +44,66 @@ def render_tab6(students):
     # Sous-onglet 1 : Ajouter un créneau
     # ────────────────────────────────────────────────────────
     with sub1:
-        st.subheader("Planifier l'emploi du temps")
-        
-        mode_planification = st.radio("Planifier par :", ["Par Classe", "Par Professeur"], horizontal=True)
+        st.subheader("Assigner un prof à une classe sur un créneau")
+        st.info("ℹ️ Les administrateurs **n'ont pas besoin** d'emploi du temps : ils sont présents tous les jours de **8h à 15h** (pause 12h-13h) automatiquement.")
 
-        if mode_planification == "Par Classe":
-            st.info("Sélectionnez une classe, puis assignez un professeur et une matière pour chaque créneau horaire.")
-            target_class = st.selectbox("Sélectionnez la Classe", classes) if classes else st.text_input("Classe (ex: 6A)")
-            target_prof = None
-        else:
-            st.info("Sélectionnez un professeur, puis assignez une classe et une matière pour chaque créneau horaire.")
-            target_class = None
-            target_prof = st.selectbox("Sélectionnez le Professeur", profs) if profs else st.text_input("Nom du professeur")
+        col_f1, col_f2 = st.columns(2)
 
-        if (mode_planification == "Par Classe" and target_class) or (mode_planification == "Par Professeur" and target_prof):
-            # Construction des options pour la grille
-            if mode_planification == "Par Classe":
-                # Choix = Prof | Matière
-                options = ["---"]
-                if profs and subject_map:
-                    for p in profs:
-                        for m in subject_map.keys():
-                            options.append(f"{p} | {m}")
-            else:
-                # Choix = Classe | Matière
-                options = ["---"]
-                if classes and subject_map:
-                    for c in classes:
-                        for m in subject_map.keys():
-                            options.append(f"{c} | {m}")
+        with col_f1:
+            with st.form("form_add_slot", clear_on_submit=True):
+                st.markdown("#### Nouveau créneau")
 
-            if not options or len(options) == 1:
-                st.warning("⚠️ Il manque des professeurs/classes ou des matières dans la BD pour générer les choix.")
-            
-            existing_slots = get_time_slots(class_name=target_class, prof_name=target_prof)
-            # Dictionnaire pour retrouver plus vite
-            slot_dict = {(s["day"], s["start_time"]): s for s in existing_slots}
+                jour = st.selectbox("Jour", JOURS)
 
-            df_data = []
-            for s, e in CRENEAUX:
-                row = {"Horaire": f"{s} - {e}"}
-                for d in JOURS:
-                    slot = slot_dict.get((d, s))
-                    if slot:
-                        if mode_planification == "Par Classe":
-                            row[d] = f"{slot['prof_name']} | {slot['subject_name']}" if slot.get('subject_name') else f"{slot['prof_name']} | ?"
-                        else:
-                            row[d] = f"{slot['class_name']} | {slot['subject_name']}" if slot.get('subject_name') else f"{slot['class_name']} | ?"
-                    else:
-                        row[d] = "---"
-                df_data.append(row)
-            
-            df = pd.DataFrame(df_data)
+                # Créneaux disponibles formatés
+                creneaux_labels = [f"{s} → {e}" for s, e in CRENEAUX]
+                creneau_idx = st.selectbox("Créneau horaire", range(len(creneaux_labels)),
+                                           format_func=lambda i: creneaux_labels[i])
+                start_time, end_time = CRENEAUX[creneau_idx]
 
-            column_config = {
-                "Horaire": st.column_config.TextColumn("Horaire", disabled=True),
-            }
-            # Pour éviter que la grille plante avant que les options soient toutes valides (ex. données non nettoyées ?)
-            for d in JOURS:
-                column_config[d] = st.column_config.SelectboxColumn(d, options=options, required=True, default="---")
+                if classes:
+                    classe = st.selectbox("Classe", classes)
+                else:
+                    classe = st.text_input("Classe (ex: 6A)")
 
-            with st.form("form_calendar_schedule", clear_on_submit=False):
-                st.markdown("#### Calendrier - Cliquez sur une case pour choisir")
-                edited_df = st.data_editor(df, column_config=column_config, use_container_width=True, hide_index=True)
-                
-                submitted = st.form_submit_button("💾 Sauvegarder la grille", use_container_width=True)
+                if profs:
+                    prof = st.selectbox("Professeur", profs)
+                else:
+                    prof = st.text_input("Nom du professeur")
+
+                # Matière (optionnel)
+                matiere_options = ["— Aucune matière —"] + list(subject_map.keys())
+                matiere_choice  = st.selectbox("Matière", matiere_options)
+                subject_id = subject_map.get(matiere_choice) if matiere_choice != "— Aucune matière —" else None
+
+                submitted = st.form_submit_button("✅ Enregistrer le créneau", use_container_width=True)
+
                 if submitted:
-                    errors = []
-                    # Sauvegarder
-                    for i, row in edited_df.iterrows():
-                        horaire = row["Horaire"]
-                        s, e = horaire.split(" - ")
-                        for d in JOURS:
-                            val = row[d]
-                            old_slot = slot_dict.get((d, s))
-                            if val and val != "---" and " | " in val:
-                                part1, part2 = val.split(" | ", 1)
-                                
-                                if mode_planification == "Par Classe":
-                                    p_name = part1
-                                    c_name = target_class
-                                    s_name = part2
-                                else:
-                                    p_name = target_prof
-                                    c_name = part1
-                                    s_name = part2
-                                    
-                                subject_id = subject_map.get(s_name)
-                                _, err = save_time_slot(d, s, e, c_name, p_name, subject_id)
-                                if err: errors.append(err)
-                            else:
-                                # "---" -> supprimer si existant
-                                if old_slot:
-                                    delete_time_slot(old_slot["id"])
-                    
-                    if errors:
-                        st.error("Certains conflits : " + ", ".join(errors))
+                    if not classe or not prof:
+                        st.error("Veuillez remplir la classe et le professeur.")
                     else:
-                        if mode_planification == "Par Classe":
-                            st.success(f"✅ Emploi du temps mis à jour pour la classe {target_class}.")
+                        slot, err = save_time_slot(jour, start_time, end_time, classe, prof, subject_id)
+                        if err:
+                            st.error(err)
                         else:
-                            st.success(f"✅ Emploi du temps mis à jour pour le prof {target_prof}.")
-                        st.rerun()
+                            st.success(f"✅ Créneau enregistré : {jour} {start_time}-{end_time} | {classe} | {prof}")
+                            st.rerun()
 
-        st.markdown("---")
-        st.markdown("**Pause automatique :** 🕒 12:00 - 13:00 (tout le monde)")
+        with col_f2:
+            st.markdown("#### Récapitulatif rapide")
+            st.markdown("**Règle des admins (automatique) :**")
+            admin_data = []
+            for cren_s, cren_e in CRENEAUX:
+                admin_data.append({"Créneau": f"{cren_s} - {cren_e}", "Statut": "✅ Présent"})
+            df_admin = pd.DataFrame(admin_data)
+            st.dataframe(df_admin, use_container_width=True, hide_index=True)
 
+            st.markdown("---")
+            st.markdown("**Pause automatique :** 🕛 12:00 - 13:00 (tout le monde)")
+
+    # ────────────────────────────────────────────────────────
+    # Sous-onglet 2 : Voir l'emploi du temps
+    # ────────────────────────────────────────────────────────
     with sub2:
         st.subheader("Consulter un emploi du temps")
 

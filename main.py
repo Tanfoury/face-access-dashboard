@@ -130,24 +130,10 @@ def red_alert():
     finally:
         _red_alert_lock.release()
 
-# -- Load YOLO lazily ------------------------------------------------------
-_yolo_model = None
-
-def get_yolo_model():
-    global _yolo_model
-    if _yolo_model is None:
-        try:
-            from ultralytics import YOLO
-            model_path = os.path.join(BASE_DIR, "yolov8n-face.pt")
-            if not os.path.exists(model_path):
-                raise FileNotFoundError(f"YOLO model not found: {model_path}")
-            print("[SYSTEM] Loading YOLO...")
-            _yolo_model = YOLO(model_path)
-            print("[SYSTEM] YOLO ready")
-        except Exception as e:
-            print(f"[SYSTEM] YOLO failed to load: {e}")
-            raise
-    return _yolo_model
+# -- Load YOLO --------------------------------------------------------------
+print("[SYSTEM] Loading YOLO...")
+model = YOLO(os.path.join(BASE_DIR, "yolov8n-face.pt"))
+print("[SYSTEM] YOLO ready")
 
 # -- State ------------------------------------------------------------------
 face_labels = {}  # key: face index, value: {label, color, box}
@@ -192,7 +178,7 @@ def ai_worker():
             frame = latest_frame.copy()
             
             # Réduire imgsz AU MAXIMUM (160) pour une détection éclair sur Raspberry Pi
-            last_results = get_yolo_model()(frame, imgsz=160, verbose=False)
+            last_results = model(frame, imgsz=160, verbose=False)
             
             new_labels = {}
             new_tracked_faces = {}
