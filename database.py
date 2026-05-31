@@ -109,9 +109,26 @@ def get_all_students():
     return [Student(r) for r in res.data]
 
 def get_student_by_name(name: str):
+    # Try exact match first
     res = supabase.table("students").select("*").eq("name", name).execute()
     if res.data:
         return Student(res.data[0])
+
+    # Fall back to case-insensitive search using ilike/filter
+    try:
+        res = supabase.table("students").select("*").filter("name", "ilike", name).execute()
+        if res.data:
+            return Student(res.data[0])
+
+        # Try common normalized variants
+        for variant in (name.lower(), name.title(), name.capitalize()):
+            res = supabase.table("students").select("*").filter("name", "ilike", variant).execute()
+            if res.data:
+                return Student(res.data[0])
+    except Exception:
+        # If the Supabase client or network fails, don't crash — return None
+        pass
+
     return None
 
 def get_student_by_id(student_id: str):

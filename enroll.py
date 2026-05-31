@@ -3,7 +3,8 @@ import cv2
 import os
 import time
 import numpy as np
-from database1 import init_db, add_student
+from database1 import init_db
+from enrollment_sync import add_student_everywhere
 from ultralytics import YOLO
 
 # ---- PATH SETUP ----
@@ -320,7 +321,7 @@ def enroll_student(name, student_id, grade, category, num_photos=25):
     # ---- SAVE TO DATABASE ----
     if count > 0:
         name = name.strip().title()
-        add_student(name, student_id, grade, save_dir, category)
+        add_student_everywhere(name, student_id, grade, save_dir, category)
 
        # ---- EXTRACT FACE VECTORS WITH INSIGHTFACE ----
         print(f"\n[ENROLL] 🔄 Extracting face vectors...")
@@ -377,7 +378,7 @@ def enroll_from_folder(name, student_id, grade, category, source_folder):
     name = name.strip().title()
 
     # ---- SAVE TO DATABASE ----
-    add_student(name, student_id, grade, save_dir, category)
+    add_student_everywhere(name, student_id, grade, save_dir, category)
 
     # ---- EXTRACT FACE VECTORS WITH INSIGHTFACE ----
     print(f"\n[ENROLL] 🔄 Extracting face vectors...")
