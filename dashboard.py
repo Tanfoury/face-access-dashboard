@@ -1,4 +1,5 @@
 import os
+import time
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
@@ -528,8 +529,97 @@ st.markdown("""
 </script>
 """, unsafe_allow_html=True)
 
-# ─── Auto-refresh ──────────────────────────────────────────────────────────────
-count = st_autorefresh(interval=2000, limit=None, key="dashboard_autorefresh")
+# ─── AUTHENTIFICATION ──────────────────────────────────────────────────────────
+LOGIN_USER = os.environ.get("DASHBOARD_USER", "admin")
+LOGIN_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "FaceGuard123")
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+def authenticate(username: str, password: str) -> bool:
+    return username == LOGIN_USER and password == LOGIN_PASSWORD
+
+def login_page():
+    # --- INJECTION CSS POUR LE DESIGN SAAS ---
+    st.markdown("""
+        <style>
+        /* Centrage et style global de la page */
+        .block-container {
+            padding-top: 4rem;
+            padding-bottom: 4rem;
+        }
+        
+        /* Cibler la boîte de formulaire générée par Streamlit */
+        [data-testid="stForm"] {
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 2.5rem;
+            background-color: #ffffff;
+            box-shadow: 0 10px 25px rgba(15, 23, 42, 0.05);
+            transition: all 0.3s ease-in-out;
+        }
+        
+        /* Styliser le bouton de soumission */
+        [data-testid="stFormSubmitButton"] button {
+            width: 100%;
+            background-color: #0f172a;
+            color: #ffffff;
+            font-weight: 600;
+            padding: 0.6rem;
+            border-radius: 8px;
+            border: none;
+            margin-top: 1rem;
+        }
+        [data-testid="stFormSubmitButton"] button:hover {
+            background-color: #1e293b;
+            color: #ffffff;
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.2);
+        }
+        [data-testid="stFormSubmitButton"] button:active {
+            transform: scale(0.98);
+        }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # --- LAYOUT CENTRÉ AVEC DES COLONNES ---
+    col1, col2, col3 = st.columns([1, 2.5, 1])
+
+    with col2:
+        # En-tête de la page de connexion
+        st.markdown(
+            """
+            <div style='text-align: center; margin-bottom: 2rem;'>
+                <h1 style='margin-bottom: 0.5rem; font-size: 2.5rem;'>🛡️ FaceGuard</h1>
+                <p style='color: #64748b; font-size: 1.1rem; margin-top: 0;'>
+                    Accès sécurisé au tableau de bord
+                </p>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+
+        # Le Formulaire
+        with st.form("login_form"):
+            username = st.text_input("Identifiant", placeholder="Entrez votre nom d'utilisateur")
+            password = st.text_input("Mot de passe", type="password", placeholder="••••••••")
+            submitted = st.form_submit_button("Se connecter")
+
+        # Gestion de la soumission
+        if submitted:
+            # Ajout d'un léger effet de chargement pour le côté pro
+            with st.spinner("Authentification en cours..."):
+                time.sleep(0.6)
+                
+                if authenticate(username.strip(), password):
+                    st.session_state.logged_in = True
+                    st.rerun()
+                else:
+                    st.error("Identifiant ou mot de passe incorrect.")
+
+if not st.session_state.logged_in:
+    login_page()
+    st.stop()
+
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 now_str  = datetime.now().strftime("%A %d %B %Y")
