@@ -18,6 +18,14 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+def safe_execute(query):
+    try:
+        return query.execute()
+    except Exception as e:
+        print(f"[DB] Supabase connection failed: {e}")
+        return type("Response", (), {"data": []})()
+
+
 # ============================================================
 #  CLASSES COMPATIBLES (pour ne pas casser dash.py)
 # ============================================================
@@ -105,24 +113,24 @@ def init_db():
 #  STUDENTS
 # ============================================================
 def get_all_students():
-    res = supabase.table("students").select("*").execute()
+    res = safe_execute(supabase.table("students").select("*"))
     return [Student(r) for r in res.data]
 
 def get_student_by_name(name: str):
     # Try exact match first
-    res = supabase.table("students").select("*").eq("name", name).execute()
+    res = safe_execute(supabase.table("students").select("*").eq("name", name))
     if res.data:
         return Student(res.data[0])
 
     # Fall back to case-insensitive search using ilike/filter
     try:
-        res = supabase.table("students").select("*").filter("name", "ilike", name).execute()
+        res = safe_execute(supabase.table("students").select("*").filter("name", "ilike", name))
         if res.data:
             return Student(res.data[0])
 
         # Try common normalized variants
         for variant in (name.lower(), name.title(), name.capitalize()):
-            res = supabase.table("students").select("*").filter("name", "ilike", variant).execute()
+            res = safe_execute(supabase.table("students").select("*").filter("name", "ilike", variant))
             if res.data:
                 return Student(res.data[0])
     except Exception:
@@ -132,33 +140,33 @@ def get_student_by_name(name: str):
     return None
 
 def get_student_by_id(student_id: str):
-    res = supabase.table("students").select("*").eq("student_id", student_id).execute()
+    res = safe_execute(supabase.table("students").select("*").eq("student_id", student_id))
     if res.data:
         return Student(res.data[0])
     return None
 
 def add_student(student_id: str, name: str, grade: str = "", category: str = "eleve"):
-    supabase.table("students").upsert({
+    safe_execute(supabase.table("students").upsert({
         "student_id": student_id,
         "name":       name,
         "grade":      grade,
         "category":   category,
         "enrolled":   True,
         "inside":     False
-    }).execute()
+    }))
 
 def update_inside(name: str, inside: bool):
-    supabase.table("students").update({"inside": inside}).eq("name", name).execute()
+    safe_execute(supabase.table("students").update({"inside": inside}).eq("name", name))
 
 def is_inside(name: str) -> bool:
-    res = supabase.table("students").select("inside").eq("name", name).execute()
+    res = safe_execute(supabase.table("students").select("inside").eq("name", name))
     if res.data:
         return res.data[0].get("inside", False)
     return False
 
 def daily_reset():
     """Remet inside=False pour tout le monde au démarrage."""
-    supabase.table("students").update({"inside": False}).neq("id", 0).execute()
+    safe_execute(supabase.table("students").update({"inside": False}).neq("id", 0))
     print("[DB] Daily reset effectué ✓")
 
 
@@ -167,45 +175,43 @@ def daily_reset():
 # ============================================================
 def get_all_logs(order=None):
     query = supabase.table("access_logs").select("*").order("timestamp", desc=True).limit(500)
-    res   = query.execute()
+    res   = safe_execute(query)
     return [AccessLog(r) for r in res.data]
 
 def log_access(student_id: str, name: str, granted: bool, action: str):
-    supabase.table("access_logs").insert({
+    safe_execute(supabase.table("access_logs").insert({
         "student_id": student_id,
         "name":       name,
         "granted":    granted,
         "action":     action,
         "timestamp":  datetime.utcnow().isoformat()
-    }).execute()
+    }))
 
 def has_entry_today(name: str) -> bool:
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0).isoformat()
-    res = supabase.table("access_logs")\
+    res = safe_execute(supabase.table("access_logs")\
         .select("id")\
         .eq("name", name)\
         .eq("action", "ENTRY")\
-        .gte("timestamp", today_start)\
-        .execute()
+        .gte("timestamp", today_start))
     return len(res.data) > 0
 
 def has_exit_today(name: str) -> bool:
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0).isoformat()
-    res = supabase.table("access_logs")\
+    res = safe_execute(supabase.table("access_logs")\
         .select("id")\
         .eq("name", name)\
         .eq("action", "EXIT")\
-        .gte("timestamp", today_start)\
-        .execute()
+        .gte("timestamp", today_start))
     return len(res.data) > 0
 
 def clear_all_logs():
-    supabase.table("access_logs").delete().neq("id", 0).execute()
+    safe_execute(supabase.table("access_logs").delete().neq("id", 0))
     print("[DB] Tous les logs effacés ✓")
 
 def cleanup_old_logs(days: int = 30):
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    supabase.table("access_logs").delete().lt("timestamp", cutoff).execute()
+    safe_execute(supabase.table("access_logs").delete().lt("timestamp", cutoff))
     print(f"[DB] Logs de plus de {days} jours supprimés ✓")
 
 
@@ -213,18 +219,17 @@ def cleanup_old_logs(days: int = 30):
 #  SCHEDULES (Emplois du temps)
 # ============================================================
 def get_schedules():
-    res = supabase.table("schedules").select("*").execute()
+    res = safe_execute(supabase.table("schedules").select("*"))
     return [Schedule(r) for r in res.data]
 
 def save_schedule(target_type: str, target_id: str, day_of_week: str,
                   morning: bool, afternoon: bool):
     # Vérifier si existe déjà
-    res = supabase.table("schedules")\
+    res = safe_execute(supabase.table("schedules")\
         .select("id")\
         .eq("target_type", target_type)\
         .eq("target_id", target_id)\
-        .eq("day_of_week", day_of_week)\
-        .execute()
+        .eq("day_of_week", day_of_week))
 
     data = {
         "target_type": target_type,
@@ -235,7 +240,7 @@ def save_schedule(target_type: str, target_id: str, day_of_week: str,
     }
 
     if res.data:
-        supabase.table("schedules").update(data).eq("id", res.data[0]["id"]).execute()
+        safe_execute(supabase.table("schedules").update(data).eq("id", res.data[0]["id"]))
     else:
-        supabase.table("schedules").insert(data).execute()
+        safe_execute(supabase.table("schedules").insert(data))
         
